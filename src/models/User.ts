@@ -1,6 +1,5 @@
 import pool from '../config/database';
 import bcrypt from 'bcryptjs';
-import CryptoJS from 'crypto-js';
 
 export interface User {
   id?: number;
@@ -20,22 +19,17 @@ export class UserModel {
     // Hash de la contraseña según ISO/IEC 27002 - A.9.2.4
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
-    
-    // Cifrar el email según prácticas de seguridad
-    const encryptedEmail = CryptoJS.AES.encrypt(
-      email, 
-      process.env.EMAIL_ENCRYPTION_KEY || 'default-secret-key'
-    ).toString();
 
+    // Guardar email en texto plano
     const [result] = await pool.execute(
       'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
-      [username, encryptedEmail, hashedPassword]
+      [username, email, hashedPassword]
     );
     
     return (result as any).insertId;
   }
 
-  // Verificar contraseña del usuario
+  // Verificar contraseña del usuario (email en texto plano)
   static async verifyPassword(email: string, password: string): Promise<User | null> {
     const [rows] = await pool.execute(
       'SELECT * FROM users WHERE email = ?',
@@ -92,5 +86,15 @@ export class UserModel {
     
     const users = rows as User[];
     return users.length > 0 ? users[0].mfa_secret || null : null;
+  }
+
+  // Obtener usuario por email
+  static async getByEmail(email: string): Promise<User | null> {
+    const [rows] = await pool.execute(
+      'SELECT * FROM users WHERE email = ?',
+      [email]
+    );
+    const users = rows as User[];
+    return users.length > 0 ? users[0] : null;
   }
 }

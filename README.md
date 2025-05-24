@@ -12,8 +12,7 @@ Este es el backend para la aplicación de prácticas seguras en React, implement
 
 ### Autenticación Multifactor (NIST SP 800-63B)
 
-- Implementación de MFA basado en TOTP según RFC 6238
-- Generación de códigos QR para aplicaciones de autenticación
+- Implementación de MFA por correo electrónico (envío de código)
 - Verificación segura de tokens MFA
 
 ## Tecnologías

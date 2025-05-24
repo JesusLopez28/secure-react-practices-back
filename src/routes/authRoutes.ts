@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
-import { register, login, setupMfa, verifyMfa } from '../controllers/authController';
+import { register, login, verifyMfa } from '../controllers/authController';
 import { auth } from '../middleware/auth';
 import { requireMfa } from '../middleware/requireMfa';
 
@@ -17,9 +17,9 @@ const router = express.Router();
 // Rutas públicas
 router.post('/register', asyncHandler(register));
 router.post('/login', asyncHandler(login));
-router.post('/verify-mfa', requireMfa, asyncHandler(verifyMfa));
+router.post('/verify-mfa', asyncHandler(verifyMfa)); // <-- Quitar requireMfa aquí
 
 // Rutas protegidas
-router.post('/setup-mfa', auth, asyncHandler(setupMfa));
+// router.post('/setup-mfa', auth, asyncHandler(setupMfa));
 
 export default router;

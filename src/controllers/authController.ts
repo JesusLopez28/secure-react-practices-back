@@ -1,8 +1,19 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import speakeasy from 'speakeasy';
-import QRCode from 'qrcode';
-import { UserModel, User } from '../models/User';
+import nodemailer from 'nodemailer';
+import { UserModel } from '../models/User';
+import { MfaCodeModel } from '../models/MfaCode';
+
+// Configuración de nodemailer
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: Number(process.env.EMAIL_PORT),
+  secure: process.env.EMAIL_SECURE === 'true',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD
+  }
+});
 
 // Validación de contraseña según estándar ISO/IEC 27002 - A.9.2.4
 const validatePassword = (password: string): { valid: boolean; message: string } => {
@@ -81,126 +92,80 @@ export const login = async (req: Request, res: Response) => {
       return;
     }
     
-    // Verificar credenciales
+    // Buscar usuario por email en texto plano
     const user = await UserModel.verifyPassword(email, password);
-    
     if (!user) {
-      res.status(401).json({ message: 'Credenciales inválidas' });
+      return res.status(401).json({ message: 'Credenciales inválidas. Verifica tu correo y contraseña.' });
+    }
+
+    // Generar código MFA y guardarlo en la base de datos
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutos
+    await MfaCodeModel.create(user.id!, code, expiresAt);
+
+    // Enviar el código por correo
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM,
+      to: user.email,
+      subject: 'Código de verificación 2FA',
+      text: `Tu código de verificación es: ${code}`,
+      html: `<p>Tu código de verificación es: <b>${code}</b></p>`
+    });
+
+    res.status(200).json({
+      message: 'MFA requerido',
+      requiresMfa: true,
+      tempEmail: user.email
+    });
+    return;
+  } catch (error) {
+    console.error('Error en login:', error);
+    res.status(500).json({ message: 'Error en el servidor. Intenta de nuevo más tarde.' });
+    return;
+  }
+};
+
+// Endpoint para verificar el código MFA enviado por email
+export const verifyMfa = async (req: Request, res: Response) => {
+  try {
+    const { code, email } = req.body;
+    if (!code || !email) {
+      res.status(400).json({ message: 'Código y email son requeridos' });
       return;
     }
-    
-    // Verificar si tiene MFA habilitado
-    const hasMfa = await UserModel.hasMfaEnabled(user.id as number);
-    
-    if (hasMfa) {
-      // Si tiene MFA, generar un token temporal para la verificación MFA
-      const tempToken = jwt.sign(
-        { id: user.id, requiresMfa: true },
-        process.env.JWT_SECRET || 'your-secret-key',
-        { expiresIn: '5m' }
-      );
-      
-      res.status(200).json({
-        message: 'MFA requerido',
-        requiresMfa: true,
-        tempToken
-      });
+
+    // Buscar usuario
+    const user = await UserModel.getByEmail(email);
+    if (!user) {
+      res.status(400).json({ message: 'Usuario no encontrado' });
       return;
     }
-    
-    // Si no tiene MFA, generar token JWT normal
-    const token = jwt.sign(
+
+    // Buscar código válido en la base de datos
+    const mfaCode = await MfaCodeModel.findValidCode(user.id!, code);
+    if (!mfaCode) {
+      res.status(401).json({ message: 'Código MFA inválido o expirado' });
+      return;
+    }
+
+    // Marcar el código como usado
+    await MfaCodeModel.markAsUsed(mfaCode.id);
+
+    // Generar token JWT completo
+    const jwtToken = jwt.sign(
       { id: user.id },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '24h' }
     );
-    
+
     res.status(200).json({
-      message: 'Login exitoso',
-      token,
+      message: 'Verificación MFA exitosa',
+      token: jwtToken,
       user: {
         id: user.id,
         username: user.username,
         email: user.email
       }
-    });
-    return;
-  } catch (error) {
-    console.error('Error en login:', error);
-    res.status(500).json({ message: 'Error en el servidor' });
-    return;
-  }
-};
-
-export const setupMfa = async (req: Request, res: Response) => {
-  try {
-    const userId = (req as any).user.id;
-    
-    // Generar un secreto TOTP (conforme a RFC 6238)
-    const secret = speakeasy.generateSecret({
-      length: 20,
-      name: `SecureReactApp:${userId}`
-    });
-    
-    // Guardar el secreto en la base de datos
-    await UserModel.saveMfaSecret(userId, secret.base32);
-    
-    // Generar código QR para configuración en app de autenticación
-    const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url || '');
-    
-    res.status(200).json({
-      message: 'MFA configurado correctamente',
-      secret: secret.base32,
-      qrCode: qrCodeUrl
-    });
-    return;
-  } catch (error) {
-    console.error('Error al configurar MFA:', error);
-    res.status(500).json({ message: 'Error en el servidor' });
-    return;
-  }
-};
-
-export const verifyMfa = async (req: Request, res: Response) => {
-  try {
-    const { token, userId } = req.body;
-    
-    if (!token || !userId) {
-      res.status(400).json({ message: 'Token y userId son requeridos' });
-      return;
-    }
-    
-    // Obtener el secreto MFA del usuario
-    const secret = await UserModel.getMfaSecret(userId);
-    
-    if (!secret) {
-      res.status(400).json({ message: 'MFA no configurado para este usuario' });
-      return;
-    }
-    
-    // Verificar el token TOTP
-    const verified = speakeasy.totp.verify({
-      secret,
-      encoding: 'base32',
-      token,
-      window: 1 // Permite una ventana de 1 intervalo (30 segundos por defecto)
-    });
-    
-    if (!verified) {
-      res.status(401).json({ message: 'Código MFA inválido' });
-      return;
-    }
-    
-    // Generar token JWT completo
-    const jwtToken = jwt.sign(
-      { id: userId },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
-    );
-    
-    res.status(200).json({
-      message: 'Verificación MFA exitosa',
-      token: jwtToken
     });
     return;
   } catch (error) {
